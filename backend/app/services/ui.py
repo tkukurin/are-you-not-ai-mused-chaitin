@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -125,6 +126,117 @@ def normalize_patch(patch: dict[str, Any], existing_nodes: list[dict[str, Any]] 
     return normalized
 
 
+def _workspace_id_suffix(workspace_id: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", workspace_id or "").strip("_") or "workspace"
+    digest = hashlib.sha1((workspace_id or "").encode("utf-8")).hexdigest()[:6]
+    return f"{cleaned[-14:]}_{digest}"
+
+
+def _scoped_insert_id(node_id: str, workspace_id: str, taken: set[str]) -> str:
+    tail = f"__{_workspace_id_suffix(workspace_id)}"
+    candidate = f"{node_id[:96 - len(tail)]}{tail}"
+    suffix = 2
+    while candidate in taken:
+        extra = f"_{suffix}"
+        candidate = f"{node_id[:96 - len(tail) - len(extra)]}{tail}{extra}"
+        suffix += 1
+    return candidate
+
+
+def _numbered_insert_id(node_id: str, taken: set[str]) -> str:
+    suffix = 2
+    while True:
+        extra = f"_{suffix}"
+        candidate = f"{node_id[:96 - len(extra)]}{extra}"
+        if candidate not in taken:
+            return candidate
+        suffix += 1
+
+
+def rewrite_insert_ids_for_global_uniqueness(
+    patches: list[dict[str, Any]],
+    workspace_id: str,
+    global_owners: dict[str, str],
+    workspace_node_ids: set[str] | list[str],
+) -> list[dict[str, Any]]:
+    """Rewrite insert ids that would collide with the global ui_nodes PK.
+
+    Pure (no DB): ``global_owners`` maps every already-persisted node_id the
+    batch wants to insert to the workspace_id that owns it. Rule:
+    - id owned by a DIFFERENT workspace (and not already in this workspace)
+      -> ``<id>__<short workspace suffix>``, then ``_2``/``_3``... while the
+      candidate is taken anywhere (globally, locally, or earlier in batch).
+    - id already in THIS workspace, or a repeat insert of an id an earlier
+      patch in the same batch claimed -> existing same-workspace semantics:
+      ``<id>_2``, ``_3``...
+    - otherwise the id is kept unchanged.
+    After an insert is (re)named, later patches in the batch that reference
+    the old id via ``parent_id``/``id`` are remapped to the new id (the old
+    id cannot denote a node in this workspace). Same-workspace duplicates
+    are NOT remapped: references to that id still mean the pre-existing node.
+    """
+    workspace_ids = set(workspace_node_ids)
+    taken = workspace_ids | set(global_owners)
+    batch_final_ids: set[str] = set()
+    rename_map: dict[str, str] = {}
+    result: list[dict[str, Any]] = []
+    for patch in patches:
+        p = dict(patch)
+        if rename_map:
+            parent_id = p.get("parent_id")
+            if isinstance(parent_id, str) and parent_id in rename_map:
+                p["parent_id"] = rename_map[parent_id]
+            if p.get("op") != "insert":
+                patch_id = p.get("id")
+                if isinstance(patch_id, str) and patch_id in rename_map:
+                    p["id"] = rename_map[patch_id]
+                node_ref = p.get("node")
+                if isinstance(node_ref, dict) and node_ref.get("id") in rename_map:
+                    p["node"] = {**node_ref, "id": rename_map[node_ref["id"]]}
+        if p.get("op") == "insert" and isinstance(p.get("node"), dict):
+            node = dict(p["node"])
+            old_id = str(node.get("id", ""))
+            if old_id:
+                if old_id not in taken:
+                    final_id = old_id
+                elif (
+                    old_id in global_owners
+                    and global_owners.get(old_id) != workspace_id
+                    and old_id not in workspace_ids
+                    and old_id not in batch_final_ids
+                ):
+                    final_id = _scoped_insert_id(old_id, workspace_id, taken)
+                else:
+                    final_id = _numbered_insert_id(old_id, taken)
+                node["id"] = final_id
+                p["node"] = node
+                taken.add(final_id)
+                batch_final_ids.add(final_id)
+                if old_id not in workspace_ids:
+                    rename_map[old_id] = final_id
+        result.append(p)
+    return result
+
+
+def _fetch_global_node_owners(node_ids: list[str]) -> dict[str, str]:
+    ids = list(dict.fromkeys(node_ids))
+    if not ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(ids))
+    with db_cursor() as (_, cursor):
+        cursor.execute(
+            f"SELECT node_id, workspace_id FROM ui_nodes WHERE node_id IN ({placeholders})",
+            ids,
+        )
+        owners: dict[str, str] = {}
+        for row in cursor.fetchall():
+            if isinstance(row, dict):
+                owners[str(row["node_id"])] = str(row["workspace_id"])
+            else:
+                owners[str(row[0])] = str(row[1])
+        return owners
+
+
 def preview_patches(owner_id: str, patches: list[dict[str, Any]], conversation_id: str = "group-main") -> dict[str, Any]:
     # workspace["workspace_id"] is the ACTUAL workspace row id (legacy
     # workspace_<owner> for group-main, ws_<conv>_<owner> otherwise); it is
@@ -135,6 +247,36 @@ def preview_patches(owner_id: str, patches: list[dict[str, Any]], conversation_i
         for node in workspace["flat_nodes"]
     ]
     normalized = [normalize_patch(patch, existing_nodes=nodes) for patch in patches]
+    # ui_nodes.node_id is a GLOBAL PK: an insert id free in this workspace may
+    # already be owned by another workspace (e.g. every merged workspace gets
+    # a model-invented 'merged_map_master'). Rewrite those to workspace-scoped
+    # ids up front (fixing later parent_id/id refs in the batch) so the INSERT
+    # in apply_patches cannot hit a duplicate-PK and discard the whole batch.
+    # Insert ids are collected AFTER normalize (which validates them), and
+    # batch-internal repeats are resolved by the rewrite's taken-set as well.
+    insert_ids = [
+        str(p["node"]["id"]) for p in normalized
+        if p.get("op") == "insert" and isinstance(p.get("node"), dict) and p["node"].get("id")
+    ]
+    if insert_ids:
+        workspace_ids = {node["id"] for node in nodes}
+        global_owners = _fetch_global_node_owners(insert_ids)
+        # Iterate: a rewritten candidate (e.g. '<id>_2') can itself be taken
+        # globally, so re-check the final ids until none is cross-workspace.
+        for _ in range(4):
+            normalized = rewrite_insert_ids_for_global_uniqueness(
+                normalized, workspace["workspace_id"], global_owners, workspace_ids,
+            )
+            final_ids = [
+                str(p["node"]["id"]) for p in normalized
+                if p.get("op") == "insert" and isinstance(p.get("node"), dict)
+            ]
+            global_owners = {
+                nid: ws for nid, ws in _fetch_global_node_owners(final_ids).items()
+                if ws != workspace["workspace_id"] and nid not in workspace_ids
+            }
+            if not global_owners:
+                break
     node_map = {node["id"]: node for node in nodes}
     for patch in normalized:
         op = patch["op"]
@@ -146,10 +288,9 @@ def preview_patches(owner_id: str, patches: list[dict[str, Any]], conversation_i
                 parent_id = root_id
                 patch["parent_id"] = root_id
             if node["id"] in node_map:
-                suffix = 2
-                while f"{node['id']}_{suffix}" in node_map:
-                    suffix += 1
-                node["id"] = f"{node['id']}_{suffix}"
+                # Same-workspace / same-batch duplicate (existing semantics):
+                # _2, _3... Cross-workspace ids were already rewritten above.
+                node["id"] = _numbered_insert_id(node["id"], set(node_map))
                 patch["node"] = node
             if parent_id and parent_id not in node_map:
                 raise PatchError(f"Parent node does not exist: {parent_id}")

@@ -321,18 +321,27 @@ async def chat(request: ChatRequest):
             # If the AI autonomously concluded that now is the moment to synthesize ("action": "merge"),
             # escalate immediately to high-thinking synthesis into workspace_ai!
             if isinstance(generated.get("output"), dict) and str(generated["output"].get("action") or "").lower() == "merge":
-                is_merge = True
-                target_owner_id = "ai"
-                workspace_before = get_workspace("ai", conversation_id=conversation_id)
-                member_workspaces = [get_workspace(a["actor_id"], conversation_id=conversation_id) for a in human_actors]
-                generated = await generate_merged_workspace(
-                    actor_name=actor["display_name"],
-                    content=request.content.strip(),
-                    transcript=transcript,
-                    member_workspaces=member_workspaces,
-                    target_workspace=workspace_before,
-                    reasoning_effort="high",
-                )
+                # Guard: only honor an autonomous merge once every human
+                # member has cards (and at least 2 humans do) — otherwise
+                # fall through with the model's original result as a grow
+                # on the speaker instead of merging prematurely.
+                human_counts = [int(workspaces_summary.get(a["actor_id"], 0)) for a in human_actors]
+                merge_ready = len(human_counts) >= 2 and all(c > 0 for c in human_counts)
+                if merge_ready:
+                    is_merge = True
+                    target_owner_id = "ai"
+                    # ensure_workspace (not bare get_workspace): a non-group-main
+                    # conversation may not have an ai workspace row yet.
+                    workspace_before = ensure_workspace(conversation_id, "ai") if conversation_id != DEFAULT_CONVERSATION_ID else get_workspace("ai", conversation_id=conversation_id)
+                    member_workspaces = [get_workspace(a["actor_id"], conversation_id=conversation_id) for a in human_actors]
+                    generated = await generate_merged_workspace(
+                        actor_name=actor["display_name"],
+                        content=request.content.strip(),
+                        transcript=transcript,
+                        member_workspaces=member_workspaces,
+                        target_workspace=workspace_before,
+                        reasoning_effort="high",
+                    )
         output = generated["output"]
         status = generated["status"]
     except Exception as exc:

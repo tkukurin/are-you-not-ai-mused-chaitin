@@ -291,7 +291,7 @@ function Studio() {
         body: JSON.stringify({ actor_id: viewer, conversation_id: activeConvId }),
       });
       await refreshAll(activeConvId, viewer);
-      setNotice("Merge sent — the model is combining everyone's workspaces into the shared (✦ AI) workspace. See the new messages above and the commit in History.");
+      setNotice("Merge sent — the model is combining everyone's workspaces into the shared (✦ AI) workspace. (It also does this on its own when the group wraps up.) See the new messages above and the commit in History.");
     } catch (err: any) { setError(err.message || "Merge failed."); }
     finally { setMerging(false); }
   }
@@ -318,11 +318,13 @@ function Studio() {
       await refreshTraces();
       // A chat can create commits / members can change counts — refresh the selector quietly.
       api<{ conversations: Conversation[] }>("/api/conversations").then((d) => setConversations(d.conversations)).catch(() => {});
-      const built = result.patches_applied?.length
-        ? ` · AI built ${result.patches_applied.map((p: Patch) => p.node?.type || p.op).join(", ")}`
-        : result.ai_silent
-          ? " · saved to group chat (AI stays quiet on casual chat — ask to add/make/compare to build UI)"
-          : "";
+      const built = result.merged
+        ? " · AI merged everyone's workspaces into the shared app"
+        : result.patches_applied?.length
+          ? ` · AI built ${result.patches_applied.map((p: Patch) => p.node?.type || p.op).join(", ")}`
+          : result.ai_silent
+            ? " · saved to group chat (AI stays quiet on casual chat — share something concrete and it builds UI)"
+            : "";
       setNotice(`Committed ${shortHash(result.commit_hash)}${built}`);
       if (result.patch_warning) setError(`AI replied, but its UI patch was rejected: ${result.patch_warning}`);
     } catch (err: any) {
@@ -565,10 +567,16 @@ function Studio() {
           </div>
           <div className="workspace-column">
             <div className="merge-bar" data-tour="merge">
-              <button type="button" className="button small" onClick={mergeWorkspaces} disabled={merging || loading || isAI || !activeConvId}>
-                {merging ? <><span className="spinner" /> Merging…</> : "✦ Merge everyone's workspaces"}
+              <button
+                type="button"
+                className="button ghost small"
+                onClick={mergeWorkspaces}
+                disabled={merging || loading || isAI || !activeConvId}
+                title="The model also merges on its own when the group wraps up."
+              >
+                {merging ? <><span className="spinner" /> Merging…</> : "Merge now (optional)"}
               </button>
-              <span className="muted" style={{ fontSize: 10.5 }}>Builds one shared app from every member's workspace.</span>
+              <span className="muted" style={{ fontSize: 10.5 }}>The model also merges on its own when the group wraps up — this merges right now if you don't want to wait.</span>
             </div>
             <WorkspacePanel
               workspace={shownWorkspace}

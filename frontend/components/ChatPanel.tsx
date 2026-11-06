@@ -12,6 +12,7 @@ const SUGGESTIONS = [
   "Add a map of meeting points",
   "Chart expected attendance by hour",
   "Add a note with the rain plan",
+  "I think we have a complete plan now",
 ];
 
 function patchSummary(trace?: TraceSummary, traceDetail?: any): { label: string; title: string } | null {
@@ -69,10 +70,12 @@ export default function ChatPanel({
           const detail = trace ? traceDetails[trace.trace_id] : undefined;
           const built = patchSummary(trace, detail);
           const targetOwnerId = trace?.workspace_id?.replace(/^workspace_/, "");
-          const targetOwnerName = actors.find((a) => a.actor_id === targetOwnerId)?.display_name
-            || targetOwnerId
-            || viewerActor?.display_name
-            || "their";
+          const targetOwnerName = targetOwnerId === "ai"
+            ? "the shared (✦ AI)"
+            : actors.find((a) => a.actor_id === targetOwnerId)?.display_name
+              || targetOwnerId
+              || viewerActor?.display_name
+              || "their";
           const sender = actors.find((a) => a.actor_id === message.actor_id);
           const color = colorForActor({ actor_id: message.actor_id, color: message.color || sender?.color });
           return (
@@ -123,7 +126,7 @@ export default function ChatPanel({
 
       {!isAI && (
         <div className="suggestion-row" aria-label="Try asking the AI to build UI">
-          <span className="suggestion-label">Ask the model to build:</span>
+          <span className="suggestion-label">Try saying:</span>
           {SUGGESTIONS.map((s) => (
             <button key={s} className="suggestion-chip" onClick={() => onSuggestion(s)} disabled={loading}>{s}</button>
           ))}
@@ -135,7 +138,7 @@ export default function ChatPanel({
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder={isAI ? "The model is not a speaking identity — switch to a person above to join the chat." : `Message as ${viewerActor?.display_name || "…"} — ask for something (\"make a checklist…\") and the model builds cards into your workspace →`}
+            placeholder={isAI ? "The model is not a speaking identity — switch to a person above to join the chat." : `Message as ${viewerActor?.display_name || "…"} — chat normally; when you share something concrete, the model quietly builds cards into your workspace →`}
             disabled={isAI || loading}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.currentTarget.form as HTMLFormElement)?.requestSubmit(); } }}
           />

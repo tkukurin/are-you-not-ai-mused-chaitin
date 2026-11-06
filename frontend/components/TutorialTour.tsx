@@ -29,8 +29,8 @@ const STEPS: TourStep[] = [
     target: '[data-tour="members"]',
   },
   {
-    title: "4 · Ask the model to build",
-    body: "Try a chip or type 'Make a checklist for…'; cards appear in that person's workspace.",
+    title: "4 · Chat — the model builds",
+    body: "Just chat as that person. Casual talk is saved quietly; when someone shares something concrete, the model grows their workspace on its own. Chips like 'Make a checklist for…' still work if you want to nudge it.",
     target: '[data-tour="composer"]',
   },
   {
@@ -39,8 +39,8 @@ const STEPS: TourStep[] = [
     target: '[data-tour="workspace"]',
   },
   {
-    title: "6 · Merge",
-    body: "Combine everyone's workspaces into one shared app.",
+    title: "6 · Shared app (automatic)",
+    body: "Shared app — when your group wraps up ('we have a plan'), the model merges everyone's workspaces by itself. This button merges right now if you don't want to wait.",
     target: '[data-tour="merge"]',
   },
   {
