@@ -1,0 +1,25 @@
+.env
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.next/
+out/
+.DS_Store
+*.log
+*.egg-info/
+frontend/tsconfig.tsbuildinfo
+
+# --- Dolt ---
+# The demo database IS shipped (it is the demo content: Street Feast replay),
+# but only its durable data files. Everything Dolt rewrites at runtime is
+# ignored: server config (contains a machine-specific absolute data_dir —
+# run.py rewrites it on start), credentials, locks, journals, stats.
+.dolt-data/config.yaml
+.dolt-data/.dolt/
+.dolt-data/.doltcfg/
+.dolt-data/**/LOCK
+.dolt-data/**/journal.idx
+.dolt-data/**/repo_state.json
+.dolt-data/malleable/.dolt/stats/
+.dolt-data/malleable/.dolt/temptf/
